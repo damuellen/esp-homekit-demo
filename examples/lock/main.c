@@ -29,12 +29,10 @@
 
 // The GPIO pin that is connected to a relay
 const int relay_gpio = 0;
-// The GPIO pin that is connected to a LED
-
 // Timeout in seconds to open lock for
-const int unlock_period = 60;  // 1 minute
+const int unlock_period = 60;
 // Which signal to send to relay to open the lock (0 or 1)
-const int relay_open_signal = 1;
+const int relay_open_signal = 0;
 
 void lock_lock();
 void lock_unlock();
@@ -55,9 +53,6 @@ static void wifi_init() {
     sdk_wifi_station_connect();
 }
 
-/**
- * Returns the door sensor state as a homekit value.
- **/
 homekit_value_t door_state_getter() {
     printf("Door state was requested (%s).\n", contact_sensor_state_get(REED_PIN) == CONTACT_OPEN ? "open": "closed");
     return HOMEKIT_UINT8(contact_sensor_state_get(REED_PIN) == CONTACT_OPEN ? 1 : 0);
@@ -83,7 +78,6 @@ homekit_characteristic_t lock_current_state = HOMEKIT_CHARACTERISTIC_(
     lock_state_unknown,
 );
 
-
 void lock_target_state_setter(homekit_value_t value);
 
 homekit_characteristic_t lock_target_state = HOMEKIT_CHARACTERISTIC_(
@@ -100,6 +94,10 @@ void contact_sensor_callback(uint8_t gpio, contact_sensor_state_t state) {
                 homekit_characteristic_notify(&lock_current_state, lock_current_state.value);
             }
         case CONTACT_CLOSED:
+            if (lock_current_state.value.int_value == lock_state_unknown) {
+                lock_current_state.value = HOMEKIT_UINT8(lock_state_secured);
+                homekit_characteristic_notify(&lock_current_state, lock_current_state.value);
+            }
             printf("Pushing contact sensor state '%s'.\n", state == CONTACT_OPEN ? "open" : "closed");
             homekit_characteristic_notify(&door_open_characteristic, door_state_getter());
             break;
@@ -131,7 +129,7 @@ void lock_target_state_setter(homekit_value_t value) {
             lock_current_state.value = HOMEKIT_UINT8(lock_state_unknown);
             homekit_characteristic_notify(&lock_current_state, lock_current_state.value);
             sdk_os_timer_disarm(&lock_timer);
-            sdk_os_timer_arm(&lock_timer, 1000, 0);
+            sdk_os_timer_disarm(&door_timer);
         } else {
             lock_unlock();
         }
@@ -143,12 +141,13 @@ void lock_target_state_setter(homekit_value_t value) {
 void lock_lock() {
     sdk_os_timer_disarm(&lock_timer);
     sdk_os_timer_disarm(&door_timer);
-    relay_write(!relay_open_signal);
-
-    if (lock_current_state.value.int_value == lock_state_unsecured) {
+    
+    if (lock_current_state.value.int_value != lock_state_jammed) {
         lock_current_state.value = HOMEKIT_UINT8(lock_state_secured);
         homekit_characteristic_notify(&lock_current_state, lock_current_state.value);
     }
+    
+    relay_write(!relay_open_signal);
 }
 
 void lock_timeout() {
@@ -167,8 +166,8 @@ void lock_timeout() {
 
 void door_timeout() {
     if (contact_sensor_state_get(REED_PIN) == CONTACT_OPEN) {
-        sdk_os_timer_disarm(&lock_timer);
-        sdk_os_timer_arm(&lock_timer, 250, 0);
+        sdk_os_timer_disarm(&door_timer);
+        lock_timeout();
     }
 }
 
@@ -183,16 +182,16 @@ void lock_init() {
 }
 
 void lock_unlock() {
-    relay_write(relay_open_signal);
-
+    sdk_os_timer_disarm(&lock_timer);
+    sdk_os_timer_disarm(&door_timer);
+    
     lock_current_state.value = HOMEKIT_UINT8(lock_state_unsecured);
     homekit_characteristic_notify(&lock_current_state, lock_current_state.value);
+    
+    relay_write(relay_open_signal);
 
-    sdk_os_timer_disarm(&lock_timer);
     sdk_os_timer_arm(&lock_timer, unlock_period * 1000, 0);
-
-    sdk_os_timer_disarm(&door_timer);
-    sdk_os_timer_arm(&door_timer, 250, 1);
+    sdk_os_timer_arm(&door_timer, 500, 1);
 }
 
 homekit_accessory_t *accessories[] = {
@@ -212,10 +211,7 @@ homekit_accessory_t *accessories[] = {
             &lock_target_state,
             NULL
         }),
-        HOMEKIT_SERVICE(
-            CONTACT_SENSOR,
-            .primary=false,
-            .characteristics=(homekit_characteristic_t*[]) {
+        HOMEKIT_SERVICE(CONTACT_SENSOR, .primary=false, .characteristics=(homekit_characteristic_t*[]){
                 HOMEKIT_CHARACTERISTIC(NAME, "Magnetschalter"),
                 &door_open_characteristic,
                 NULL
@@ -231,7 +227,6 @@ homekit_server_config_t config = {
     .password = "876-54-321"
 };
 
-
 void create_accessory_name() {
     uint8_t macaddr[6];
     sdk_wifi_get_macaddr(STATION_IF, macaddr);
@@ -239,6 +234,7 @@ void create_accessory_name() {
     int name_len = snprintf(NULL, 0, "Tür-%02X%02X%02X",
                             macaddr[3], macaddr[4], macaddr[5]);
     char *name_value = malloc(name_len+1);
+    
     snprintf(name_value, name_len+1, "Tür-%02X%02X%02X",
              macaddr[3], macaddr[4], macaddr[5]);
 
@@ -251,7 +247,10 @@ void user_init(void) {
     create_accessory_name();
 
     wifi_init();
+    
     homekit_server_init(&config);
+    
     gpio_init();
+    
     lock_init();
 }
