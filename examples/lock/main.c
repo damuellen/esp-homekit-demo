@@ -29,8 +29,6 @@
 
 // The GPIO pin that is connected to a relay
 const int relay_gpio = 0;
-// Timeout in seconds to open lock for
-const int unlock_period = 60;
 // Which signal to send to relay to open the lock (0 or 1)
 const int relay_open_signal = 0;
 
@@ -78,6 +76,24 @@ homekit_characteristic_t lock_current_state = HOMEKIT_CHARACTERISTIC_(
     lock_state_unknown,
 );
 
+void lock_timeout_setter(homekit_value_t value);
+homekit_value_t lock_timeout_get();
+
+homekit_characteristic_t lock_timeout_state = HOMEKIT_CHARACTERISTIC_(
+    LOCK_MANAGEMENT_AUTO_SECURITY_TIMEOUT,
+    60,
+    .getter=lock_timeout_get,
+    .setter=lock_timeout_setter
+);
+
+homekit_value_t lock_timeout_get() {
+    return lock_timeout_state.value;
+}
+
+void lock_timeout_setter(homekit_value_t value) {
+    lock_timeout_state.value = value;
+}
+
 void lock_target_state_setter(homekit_value_t value);
 
 homekit_characteristic_t lock_target_state = HOMEKIT_CHARACTERISTIC_(
@@ -95,6 +111,10 @@ void contact_sensor_callback(uint8_t gpio, contact_sensor_state_t state) {
             }
         case CONTACT_CLOSED:
             if (lock_current_state.value.int_value == lock_state_unknown) {
+                if (lock_target_state.value.int_value != lock_state_secured) {
+                    lock_target_state.value = HOMEKIT_UINT8(lock_state_secured);
+                    homekit_characteristic_notify(&lock_target_state, lock_target_state.value);
+                }
                 lock_current_state.value = HOMEKIT_UINT8(lock_state_secured);
                 homekit_characteristic_notify(&lock_current_state, lock_current_state.value);
             }
@@ -118,12 +138,16 @@ void lock_identify(homekit_value_t _value) {
     printf("Lock identify\n");
 }
 
+void lock_control_point(homekit_value_t value) {
+    // Nothing to do here
+}
+
 ETSTimer door_timer;
 ETSTimer lock_timer;
 
 void lock_target_state_setter(homekit_value_t value) {
     lock_target_state.value = value;
-
+    
     if (value.int_value == 0) {
         if (contact_sensor_state_get(REED_PIN) == CONTACT_OPEN) {
             lock_current_state.value = HOMEKIT_UINT8(lock_state_unknown);
@@ -142,7 +166,7 @@ void lock_lock() {
     sdk_os_timer_disarm(&lock_timer);
     sdk_os_timer_disarm(&door_timer);
     
-    if (lock_current_state.value.int_value != lock_state_jammed) {
+    if (lock_current_state.value.int_value == lock_state_unsecured) {
         lock_current_state.value = HOMEKIT_UINT8(lock_state_secured);
         homekit_characteristic_notify(&lock_current_state, lock_current_state.value);
     }
@@ -190,7 +214,7 @@ void lock_unlock() {
     
     relay_write(relay_open_signal);
 
-    sdk_os_timer_arm(&lock_timer, unlock_period * 1000, 0);
+    sdk_os_timer_arm(&lock_timer, lock_timeout_state.value.int_value * 1000, 0);
     sdk_os_timer_arm(&door_timer, 500, 1);
 }
 
@@ -211,6 +235,20 @@ homekit_accessory_t *accessories[] = {
             &lock_target_state,
             NULL
         }),
+        HOMEKIT_SERVICE(LOCK_MANAGEMENT, .characteristics=(homekit_characteristic_t*[]){
+            HOMEKIT_CHARACTERISTIC(LOCK_CONTROL_POINT,
+                .setter=lock_control_point,
+                 NULL
+            ),
+            HOMEKIT_CHARACTERISTIC(LOCK_MANAGEMENT_AUTO_SECURITY_TIMEOUT,
+               60,
+               .setter=lock_timeout_setter,
+               .getter=lock_timeout_get,
+                NULL
+            ),
+            HOMEKIT_CHARACTERISTIC(VERSION, "1"),
+            NULL
+        }),
         HOMEKIT_SERVICE(CONTACT_SENSOR, .primary=false, .characteristics=(homekit_characteristic_t*[]){
                 HOMEKIT_CHARACTERISTIC(NAME, "Magnetschalter"),
                 &door_open_characteristic,
@@ -224,7 +262,8 @@ homekit_accessory_t *accessories[] = {
 
 homekit_server_config_t config = {
     .accessories = accessories,
-    .password = "876-54-321"
+    .password = "742-84-519",
+    .setupId = "2NS4",
 };
 
 void create_accessory_name() {

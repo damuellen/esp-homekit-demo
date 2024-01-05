@@ -1,5 +1,4 @@
 #include <string.h>
-#include <etstimer.h>
 #include <esplibs/libmain.h>
 #include "contact_sensor.h"
 
@@ -27,7 +26,6 @@ contact_sensor_state_t contact_sensor_state_get(uint8_t gpio_num) {
     return gpio_read(gpio_num);
 }
 
-
 void contact_sensor_intr_callback(uint8_t gpio) {
     contact_sensor_t *sensor = contact_sensor_find_by_gpio(gpio);
     if (!sensor)
@@ -35,7 +33,6 @@ void contact_sensor_intr_callback(uint8_t gpio) {
 
     sensor->callback(sensor->gpio_num, contact_sensor_state_get(sensor->gpio_num));
 }
-
 
 int contact_sensor_create(const uint8_t gpio_num, contact_sensor_callback_fn callback) {
     contact_sensor_t *sensor = contact_sensor_find_by_gpio(gpio_num);
