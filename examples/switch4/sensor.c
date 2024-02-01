@@ -50,7 +50,7 @@ int sensor_create(const uint8_t gpio_num, sensor_callback_fn callback) {
     sensor->callback = callback;
 
     // times in milliseconds
-    sensor->debounce_time = 10;
+    sensor->debounce_time = 20;
 
     uint32_t now = xTaskGetTickCountFromISR();
     sensor->last_event_time = now;

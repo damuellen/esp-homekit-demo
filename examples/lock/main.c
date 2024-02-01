@@ -14,10 +14,10 @@
 #include <task.h>
 #include <etstimer.h>
 #include <esplibs/libmain.h>
-#include "contact_sensor.h"
+#include "toggle.h"
 #include <homekit/homekit.h>
 #include <homekit/characteristics.h>
-#include <wifi_config.h>
+//#include <wifi_config.h>
 #include "wifi.h"
 #ifndef REED_PIN
 #error REED_PIN is not specified
@@ -51,9 +51,10 @@ static void wifi_init() {
     sdk_wifi_station_connect();
 }
 
+homekit_value_t door_state;
+
 homekit_value_t door_state_getter() {
-    printf("Door state was requested (%s).\n", contact_sensor_state_get(REED_PIN) == CONTACT_OPEN ? "open": "closed");
-    return HOMEKIT_UINT8(contact_sensor_state_get(REED_PIN) == CONTACT_OPEN ? 1 : 0);
+    return door_state;
 }
 
 homekit_characteristic_t door_open_characteristic = HOMEKIT_CHARACTERISTIC_(CONTACT_SENSOR_STATE, 0,
@@ -102,7 +103,11 @@ homekit_characteristic_t lock_target_state = HOMEKIT_CHARACTERISTIC_(
     .setter=lock_target_state_setter,
 );
 
-void contact_sensor_callback(uint8_t gpio, contact_sensor_state_t state) {
+void contact_sensor_callback(contact_sensor_state_t state) {
+    if (door_state.int_value != state) {
+        door_state = HOMEKIT_UINT8(state);
+        homekit_characteristic_notify(&door_open_characteristic, door_state);
+    }
     switch (state) {
         case CONTACT_OPEN:
             if (lock_current_state.value.int_value == lock_state_jammed) {
@@ -118,8 +123,6 @@ void contact_sensor_callback(uint8_t gpio, contact_sensor_state_t state) {
                 lock_current_state.value = HOMEKIT_UINT8(lock_state_secured);
                 homekit_characteristic_notify(&lock_current_state, lock_current_state.value);
             }
-            printf("Pushing contact sensor state '%s'.\n", state == CONTACT_OPEN ? "open" : "closed");
-            homekit_characteristic_notify(&door_open_characteristic, door_state_getter());
             break;
         default:
             printf("Unknown contact sensor event: %d\n", state);
@@ -127,7 +130,7 @@ void contact_sensor_callback(uint8_t gpio, contact_sensor_state_t state) {
 }
 
 void gpio_init() {
-    if (contact_sensor_create(REED_PIN, contact_sensor_callback)) {
+    if (toggle_create(REED_PIN, contact_sensor_callback)) {
         printf("Failed to initialize door\n");
     }
     gpio_enable(relay_gpio, GPIO_OUTPUT);
@@ -149,7 +152,7 @@ void lock_target_state_setter(homekit_value_t value) {
     lock_target_state.value = value;
     
     if (value.int_value == 0) {
-        if (contact_sensor_state_get(REED_PIN) == CONTACT_OPEN) {
+        if (gpio_read(REED_PIN) == CONTACT_OPEN) {
             lock_current_state.value = HOMEKIT_UINT8(lock_state_unknown);
             homekit_characteristic_notify(&lock_current_state, lock_current_state.value);
             sdk_os_timer_disarm(&lock_timer);
@@ -180,7 +183,7 @@ void lock_timeout() {
         homekit_characteristic_notify(&lock_target_state, lock_target_state.value);
     }
 
-    if (contact_sensor_state_get(REED_PIN) != CONTACT_OPEN) {
+    if (gpio_read(REED_PIN) != CONTACT_OPEN) {
         lock_current_state.value = HOMEKIT_UINT8(lock_state_jammed);
         homekit_characteristic_notify(&lock_current_state, lock_current_state.value);
     }
@@ -189,16 +192,18 @@ void lock_timeout() {
 }
 
 void door_timeout() {
-    if (contact_sensor_state_get(REED_PIN) == CONTACT_OPEN) {
+    if (gpio_read(REED_PIN) == CONTACT_OPEN) {
         sdk_os_timer_disarm(&door_timer);
-        lock_timeout();
+        sdk_os_timer_disarm(&lock_timer);
+        sdk_os_timer_arm(&lock_timer, 50, 0);
     }
 }
 
 void lock_init() {
     lock_current_state.value = HOMEKIT_UINT8(lock_state_secured);
-    homekit_characteristic_notify(&lock_current_state, lock_current_state.value);
-    homekit_characteristic_notify(&door_open_characteristic, door_state_getter());
+    door_state = HOMEKIT_UINT8(gpio_read(REED_PIN));
+    homekit_characteristic_notify(&lock_current_state, lock_current_state.value);  
+    homekit_characteristic_notify(&door_open_characteristic, door_open_characteristic.value);
     sdk_os_timer_disarm(&lock_timer);
     sdk_os_timer_setfn(&lock_timer, lock_timeout, NULL);
     sdk_os_timer_disarm(&door_timer);
@@ -215,7 +220,7 @@ void lock_unlock() {
     relay_write(relay_open_signal);
 
     sdk_os_timer_arm(&lock_timer, lock_timeout_state.value.int_value * 1000, 0);
-    sdk_os_timer_arm(&door_timer, 500, 1);
+    sdk_os_timer_arm(&door_timer, 200, 1);
 }
 
 homekit_accessory_t *accessories[] = {

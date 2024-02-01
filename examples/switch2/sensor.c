@@ -24,7 +24,6 @@ static sensor_t *sensor_find_by_gpio(const uint8_t gpio_num) {
     return sensor;
 }
 
-
 void sensor_intr_callback(uint8_t gpio) {
     sensor_t *sensor = sensor_find_by_gpio(gpio);
     if (!sensor)
@@ -50,7 +49,7 @@ int sensor_create(const uint8_t gpio_num, sensor_callback_fn callback) {
     sensor->callback = callback;
 
     // times in milliseconds
-    sensor->debounce_time = 200;
+    sensor->debounce_time = 20;
 
     uint32_t now = xTaskGetTickCountFromISR();
     sensor->last_event_time = now;
@@ -58,7 +57,7 @@ int sensor_create(const uint8_t gpio_num, sensor_callback_fn callback) {
     sensor->next = sensors;
     sensors = sensor;
 
-    gpio_set_pullup(sensor->gpio_num, true, true);
+    gpio_set_pullup(sensor->gpio_num, false, true);
     gpio_set_interrupt(sensor->gpio_num, GPIO_INTTYPE_EDGE_POS, sensor_intr_callback);
 
     return 0;
